@@ -1,51 +1,52 @@
-from VideoAnalyzer.domains.models import FileMetadata
+from VideoAnalyzer.domains.injestion.models import FileMetadata
 from VideoAnalyzer.settings import config_settings
-from VideoAnalyzer.models import FileInjestionRequestDto
 from loguru import logger
 from urllib.parse import urlparse
 from pydub import AudioSegment
 from VideoAnalyzer.exception import VideoException
 import os
-from subprocess import run, CalledProcessError
+from subprocess import run
 import subprocess
 from io import BytesIO
 import requests
 import math
 import time
 from typing import List, Any, BinaryIO
-import boto3
+from langchain_core.documents import Document
+from VideoAnalyzer.domains.s3_utils.utils import get_s3_client, upload_to_spaces
 from pathlib import Path
-import botocore.exceptions
 
 
-def get_s3_client(
-        region_name: str,
-        endpoint_url: str,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
-) -> Any:
-    return boto3.session.Session().client(
-        "s3",
-        region_name=region_name,
-        endpoint_url=endpoint_url,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-    )
+def format_timestamp(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}"
 
 
-def upload_to_spaces(
-        client: Any, file: BinaryIO, bucket_name: str, file_name: str, content_type: str
-) -> None:
+def format_transcription(all_segments, logger) -> List[Document]:
+    """Format transcription segments into Document objects"""
     try:
-        client.upload_fileobj(
-            file,
-            bucket_name,
-            file_name,
-            ExtraArgs={"ContentType": content_type},
-        )
-    except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:
-        logger.exception("Failed to upload to spaces")
-        raise Exception(f"Failed to upload to spaces: {e}") from e
+        logger.info("Formatting transcription with timestamps.")
+        documents = []
+
+        for segment in all_segments:
+            start_time = format_timestamp(segment.start)
+            end_time = format_timestamp(segment.end)
+
+            metadata = {
+                "start_time": start_time,
+                "end_time": end_time,
+            }
+
+            doc = Document(page_content=segment.text, metadata=metadata)
+            documents.append(doc)
+
+        return documents
+
+    except Exception as e:
+        logger.error(f"An error occurred during transcription formatting: {str(e)}")
+        raise
 
 
 def generate_video_thumbnail(pre_signed_url: str) -> BytesIO:
@@ -69,6 +70,19 @@ def generate_video_thumbnail(pre_signed_url: str) -> BytesIO:
     )
 
     return BytesIO(thumbnail_result.stdout)
+
+
+def cleanup_temp_files(directory):
+    try:
+        logger.info(f"Cleaning up files in directory: {directory}")
+        for filename in os.listdir(directory):
+            file_path = os.path.join(directory, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                logger.info(f"Deleted file: {file_path}")
+    except Exception as e:
+        logger.warning(f"Failed to clean up files in {directory}. Reason: {e}")
+
 
 
 def extract_metadata_from_video(
@@ -119,9 +133,43 @@ def extract_metadata_from_video(
         raise VideoException("Failed to download from pre_signed_url", error_detail=e)
 
 
+# def compress_audio(input_file, output_file, logger):
+#     """Compress audio file using FFmpeg"""
+#     try:
+#         logger.info(f"Compressing audio: {input_file}")
+#         start_time = time.time()
+#         command = [
+#             "ffmpeg",
+#             "-i",
+#             input_file,
+#             "-vn",
+#             "-map_metadata",
+#             "-1",
+#             "-ac",
+#             "1",
+#             "-c:a",
+#             "libopus",
+#             "-b:a",
+#             "12k",
+#             "-application",
+#             "voip",
+#             output_file,
+#         ]
+#         run(command, check=True)
+#         logger.info(
+#             f"Compression completed in {time.time() - start_time:.2f} seconds: {output_file}"
+#         )
+#     except Exception as e:
+#         logger.error(f"An error occurred during audio compression: {str(e)}")
+#         raise
+
 def compress_audio(input_file, output_file, logger):
     """Compress audio file using FFmpeg"""
     try:
+        if not os.path.exists(input_file):
+            logger.error(f"Input file does not exist: {input_file}")
+            raise FileNotFoundError(f"Input file does not exist: {input_file}")
+
         logger.info(f"Compressing audio: {input_file}")
         start_time = time.time()
         command = [

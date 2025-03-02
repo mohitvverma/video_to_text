@@ -1,6 +1,4 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Header
-from loguru import logger
-from VideoAnalyzer.domains.models import
 from VideoAnalyzer.domains.injestion.utils import extract_metadata_from_video
 from VideoAnalyzer.models import (
     FileInjestionRequestDto,
@@ -9,6 +7,8 @@ from VideoAnalyzer.models import (
 )
 from VideoAnalyzer.settings import config_settings
 from loguru import logger
+from typing import Tuple, Any, Callable
+
 
 router = APIRouter(tags=["injestion"])
 
@@ -55,6 +55,7 @@ def injest_doc(
             )
 
         background_tasks.add_task(
+            request,
 
         )
         return response

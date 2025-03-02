@@ -19,7 +19,8 @@ FILE_TYPE = Literal[
   "m4a",
   "ogg",
   "wav",
-  "webm"
+  "webm",
+   "txt",
 ]
 
 PROCESS_TYPE = Literal[
